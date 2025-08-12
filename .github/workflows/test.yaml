@@ -1,0 +1,131 @@
+on:
+  push:
+    branches:
+      - test
+  workflow_dispatch:
+name: 'Test'
+env:
+  NODE_VERSION: '18.20.5'
+  AZURE_WEBAPP_PACKAGE_PATH: "/"
+  AZURE_CONTAINER_REGISTRY: "ttlinedev"
+  CONTAINER_APP_NAME: "tt-ferry-dev"
+  AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+  AZURE_REGISTRY_USERNAME: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+  AZURE_REGISTRY_PASSWORD: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+  AZURE_SUBNET_ID: ${{ secrets.AZURE_SUBNET_ID }}
+jobs:
+  lint:
+    name: Lint Application
+    runs-on: ubuntu-latest
+    environment: test
+    if: "!contains(github.event.head_commit.message, 'ci skip') && github.event_name == 'push'"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Lint
+        run: npm run lint:check
+
+  test:
+    needs:
+      - lint
+    name: Test Application
+    runs-on: ubuntu-latest
+    environment: test
+    if: "!contains(github.event.head_commit.message, 'ci skip') && github.event_name == 'push'"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - run: echo 'Testing application'
+      - name: Run Test
+        run: npm run test:unit  -- --no-watch
+
+  build:
+    needs:
+      - lint
+    name: Build Application
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'ci skip') && github.event_name == 'push'"
+    environment: test
+    env:
+      DOCKER_FILE_EXT: ".test"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+          username: ${{ env.AZURE_REGISTRY_USERNAME }}
+          password: ${{ env.AZURE_REGISTRY_PASSWORD }}
+      - name: Build and push container image to ACR
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
+          file: infra/docker/Dockerfile${{ env.DOCKER_FILE_EXT }}
+      # - name: Archive container deployment file
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: container-deployment-file
+      #     path: infra/azure/container-template.yaml
+      #     retention-days: 1
+
+  deploy-secured:
+    name: Deploy Securely
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    env:
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+    needs:
+      - build
+      - test
+    environment:
+      name: 'feature'
+      url: ${{ steps.deploy-service.outputs.properties.ipAddress.ip }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - run: echo 'deploying so your can test your pull request'
+      # - name: Download container deployment file
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: container-deployment-file
+      - uses: actions/checkout@v4
+      - name: Upgrade Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE }}
+      - name: Prepare ACI YAML from template
+        run: |
+          # Define other environment vars
+          export APPLICATION_IMAGE=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
+          export AZURE_REGISTRY_SERVER=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+          
+          # Fill in the YAML template
+          envsubst < infra/azure/container-template.yaml > container-instances-vnet.yaml
+
+      - name: Display generated file
+        run: cat container-instances-vnet.yaml
+      # this deploys to a private container instance
+      - name: 'Deploy to Azure Container Instances'
+        id: deploy-service
+        run: | 
+            az container create --resource-group $AZURE_RESOURCE_GROUP --file container-instances-vnet.yaml
+            

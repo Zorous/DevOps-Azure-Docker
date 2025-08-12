@@ -1,0 +1,12 @@
+FROM node:18.20-alpine AS build
+WORKDIR /dist/src/app
+COPY ../../ .
+RUN npm install
+RUN npm run build
+
+
+### STAGE 2:RUN ###
+FROM nginx:latest AS server
+COPY --from=build /dist/src/app/dist /usr/share/nginx/html
+COPY infra/docker/nginx.test.conf  /etc/nginx/conf.d/default.conf
+EXPOSE 80

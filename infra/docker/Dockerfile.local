@@ -1,0 +1,14 @@
+FROM node:18.20-alpine AS build
+# Create a Virtual directory inside the docker image
+WORKDIR /dist/src/app
+# ENV NODE_OPTIONS=--openssl-legacy-provider\
+RUN npm cache clean --force
+# Copy files from local machine to virtual directory in docker image
+COPY ../../ .
+RUN npm install --global lite-server
+RUN npm install
+# RUN npm rebuild node-sass
+RUN npm run build
+
+EXPOSE 80
+CMD ["lite-server", "-c", "lite-server.config.js"]

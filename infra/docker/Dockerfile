@@ -3,21 +3,21 @@
 # Which version of Node image to use depends on project dependencies
 # This is needed to build and compile our code
 # while generating the docker image
-FROM node:12.14-alpine AS build
-# Create a Virtual directory inside the docker image
-WORKDIR /dist/src/app
-# ENV NODE_OPTIONS=--openssl-legacy-provider
-# Copy files to virtual directory
-# COPY package.json package-lock.json ./
-# Run command in Virtual directory
-RUN npm cache clean --force
-# Copy files from local machine to virtual directory in docker image
-COPY ../../ .
-RUN npm install --global lite-server
+# Stage 1: Build
+FROM node:18-alpine AS build
+
+WORKDIR /app
+
+COPY package*.json ./
 RUN npm install
-RUN npm rebuild node-sass
-# RUN npm run build-locale:test
-RUN npm run build-local-locale && cp -r jsonTranslations/en/ dist/AppsRegistry/
+
+COPY . .
+RUN npm run build
+
+### STAGE 2:SERVE ###
+FROM nginx:alpine
+
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
-CMD ["lite-server", "-c", "lite-server.config.js"]
